@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Isolation Lab</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .terminal-link {
+            display: inline-block;
+            background-color: #28a745;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .terminal-link:hover {
+            background-color: #218838;
+        }
+        .release-btn {
+            background-color: #dc3545;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .release-btn:hover {
+            background-color: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Secure CLI Access</h1>
+        <p>Request your isolated command-line interface. Your files will persist between sessions.</p>
+        
+        <form id="cliForm">
+            <div class="form-group">
+                <label for="username">Username:</label>
+                <input type="text" id="username" name="username" required 
+                       placeholder="Enter your username" autocomplete="off">
+            </div>
+            
+            <button type="submit" id="requestBtn">🖥️ Request CLI Access</button>
+        </form>
+        
+        <div id="result"></div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.hostname === 'localhost' 
+            ? 'http://localhost:5000'  
+            : `http://${window.location.hostname}:5000`;
+
+        const form = document.getElementById('cliForm');
+        const usernameInput = document.getElementById('username');
+        const requestBtn = document.getElementById('requestBtn');
+        const resultDiv = document.getElementById('result');
+
+        function showResult(type, message) {
+            resultDiv.className = `result ${type}`;
+            resultDiv.innerHTML = message;
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = usernameInput.value.trim();
+            if (!username) return;
+            
+            requestBtn.disabled = true;
+            requestBtn.textContent = '⏳ Creating secure container...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/request-cli`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username: username })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showResult('success', `
+                        <h3>✅ CLI Access Granted!</h3>
+                        <p><strong>Container:</strong> ${data.container_name}</p>
+                        <p><strong>Workspace:</strong> /workspace (your files persist here)</p>
+                        
+                        ${data.data_status && data.data_status.has_data ? `
+                            <div style="background: rgba(46, 204, 113, 0.2); padding: 10px; border-radius: 5px; margin: 10px 0;">
+                                <strong>📁 Your Files Restored!</strong><br>
+                                Your files from previous sessions are available in <code>/workspace</code>
+                            </div>
+                        ` : `
+                            <div style="background: rgba(52, 152, 219, 0.2); padding: 10px; border-radius: 5px; margin: 10px 0;">
+                                <strong>🆕 Clean Workspace</strong><br>
+                                Files saved in <code>/workspace</code> will persist between sessions.
+                            </div>
+                        `}
+                        
+                        <a href="${data.url}" target="_blank" class="terminal-link">
+                            🖥️ Open Terminal
+                        </a>
+                        
+                        <button onclick="releaseContainer('${username}')" class="release-btn">
+                            🗑️ Release Session
+                        </button>
+                        
+                        <br><small>Terminal will auto-close after 2 minutes of inactivity</small>
+                    `);
+                } else {
+                    showResult('error', `
+                        <h3>❌ Error</h3>
+                        <p>${data.error}</p>
+                    `);
+                }
+            } catch (error) {
+                showResult('error', `
+                    <h3>❌ Connection Error</h3>
+                    <p>Failed to connect to the backend service.</p>
+                `);
+            }
+            
+            requestBtn.disabled = false;
+            requestBtn.textContent = '🖥️ Request CLI Access';
+        });
+
+        async function releaseContainer(username) {
+            if (confirm('This will close your terminal session. Your files will be saved. Continue?')) {
+                try {
+                    const response = await fetch(`${API_BASE}/api/release-cli`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({username: username})
+                    });
+                    
+                    const data = await response.json();
+                    showResult('success', `
+                        <h3>✅ Session Released</h3>
+                        <p>${data.message}</p>
+                        <p>You can request a new session anytime.</p>
+                    `);
+                } catch (error) {
+                    showResult('error', `
+                        <h3>❌ Error</h3>
+                        <p>Failed to release session.</p>
+                    `);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
