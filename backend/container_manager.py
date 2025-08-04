@@ -7,13 +7,13 @@ import random
 from typing import Dict, Optional
 
 class ContainerManager:
-    def __init__(self, container_host_ip=None, ssh_username='azureuser'):
-        # Configuration for remote container host
-        self.container_host_ip = container_host_ip or 'localhost'
-        self.ssh_username = ssh_username
-        self.is_remote = container_host_ip is not None
+    def __init__(self, container_host_ip=None, ssh_username=None):
+        # Configuration for local Docker
+        self.container_host_ip = 'localhost'
+        self.ssh_username = None
+        self.is_remote = False  # Always local for development
         
-        # Test connection (Docker or SSH+Docker)
+        # Test local Docker connection
         self._test_connection()
         
         self.user_containers: Dict[str, dict] = {}
@@ -21,33 +21,22 @@ class ContainerManager:
         self.cleanup_thread.start()
     
     def _test_connection(self):
-        """Test Docker connection (local or remote)"""
+        """Test local Docker connection"""
         try:
-            if self.is_remote:
-                # Test SSH + Docker on remote host
-                result = self._run_remote_command(['docker', 'ps'])
-                print(f"✅ Remote Docker connection successful to {self.container_host_ip}")
-            else:
-                # Test local Docker (backward compatibility)
-                result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, check=True)
-                print("✅ Local Docker connection successful")
+            # Test local Docker
+            result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, check=True)
+            print("✅ Local Docker connection successful")
         except Exception as e:
             print(f"❌ Docker connection failed: {e}")
+            print("Make sure Docker Desktop is installed and running")
             raise e
     
-    def _run_remote_command(self, cmd: list) -> subprocess.CompletedProcess:
-        """Execute command on remote container host via SSH"""
-        if not self.is_remote:
-            # Local execution (backward compatibility)
-            return subprocess.run(cmd, capture_output=True, text=True, check=True)
-        
-        # Remote execution via SSH
-        cmd_str = ' '.join(f'"{arg}"' if ' ' in str(arg) else str(arg) for arg in cmd)
-        ssh_cmd = f"ssh -o StrictHostKeyChecking=no {self.ssh_username}@{self.container_host_ip} '{cmd_str}'"
-        return subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, check=True)
+    def _run_command(self, cmd: list) -> subprocess.CompletedProcess:
+        """Execute Docker command locally"""
+        return subprocess.run(cmd, capture_output=True, text=True, check=True)
     
     def create_user_container(self, username: str) -> dict:
-        """Create container on local or remote host"""
+        """Create container locally"""
         container_id = str(uuid.uuid4())[:8]
         container_name = f"cli-{username}-{container_id}"
         volume_name = f"user-data-{username}"
@@ -55,11 +44,11 @@ class ContainerManager:
         port = self._find_available_port()
         
         try:
-            # Step 1: Create volume on target host
-            print(f"Creating volume {volume_name} on {self.container_host_ip}")
-            self._run_remote_command(['docker', 'volume', 'create', volume_name])
+            # Step 1: Create volume locally
+            print(f"Creating volume {volume_name}")
+            self._run_command(['docker', 'volume', 'create', volume_name])
             
-            # Step 2: Create container on target host
+            # Step 2: Create container locally using custom image
             cmd = [
                 'docker', 'run', '-d',
                 '--name', container_name,
@@ -69,26 +58,26 @@ class ContainerManager:
                 '--cpus', '0.5',
                 '--pids-limit', '50',
                 '--read-only',
-                '--tmpfs', '/tmp',
-                '--tmpfs', '/home',
-                '--tmpfs', '/var',
+                '--tmpfs', '/tmp:exec',
+                '--tmpfs', '/var/tmp:exec',
+                '--tmpfs', '/home/ros/.ros:rw,exec',
                 '--security-opt', 'no-new-privileges',
                 '--cap-drop', 'NET_RAW',
                 '--cap-drop', 'SYS_ADMIN',
                 '--cap-drop', 'SYS_MODULE',
                 '-p', f'{port}:7681',
-                '--env', 'HOME=/workspace',
-                '--env', 'USER=root',
+                '--user', 'ros',
+                '--env', 'HOME=/home/ros',
+                '--env', 'USER=ros',
                 '--env', 'SHELL=/bin/bash',
                 '--workdir', '/workspace',
-                'tsl0922/ttyd:latest',
-                'ttyd', '-W', '-p', '7681', 'bash'
+                'cli-isolation:latest'
             ]
             
-            result = self._run_remote_command(cmd)
+            result = self._run_command(cmd)
             container_id_full = result.stdout.strip()
             
-            # Store container info with remote host IP
+            # Store container info for localhost
             self.user_containers[username] = {
                 "container_id": container_id_full,
                 "container_name": container_name,
@@ -99,11 +88,16 @@ class ContainerManager:
                 "last_accessed": time.time(),
                 "url": f"http://{self.container_host_ip}:{port}",
                 "has_persistent_data": True,
-                "deployment_type": "remote" if self.is_remote else "local"
+                "deployment_type": "local"
             }
             
-            print(f"✅ Created container {container_name} on {self.container_host_ip}:{port}")
+            print(f"✅ Created container {container_name} on localhost:{port}")
             return self.user_containers[username]
+            
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Error creating container: {e}")
+            print(f"Error details: {e.stderr}")
+            return None
             
         except subprocess.CalledProcessError as e:
             print(f"❌ Error creating container on {self.container_host_ip}: {e}")
@@ -128,15 +122,15 @@ class ContainerManager:
             container_name = container_info["container_name"]
             volume_name = container_info.get("volume_name", f"user-data-{username}")
             
-            # Stop and remove container on remote host
-            self._run_remote_command(['docker', 'stop', container_name])
-            self._run_remote_command(['docker', 'rm', container_name])
+            # Stop and remove container locally
+            self._run_command(['docker', 'stop', container_name])
+            self._run_command(['docker', 'rm', container_name])
             
             # Remove from tracking but KEEP the volume
             del self.user_containers[username]
             
-            print(f"✅ Container {container_name} removed from {self.container_host_ip}")
-            print(f"✅ User data preserved in volume: {volume_name}")
+            print(f"Container {container_name} removed from localhost")
+            print(f"User data preserved in volume: {volume_name}")
             return True
             
         except subprocess.CalledProcessError as e:
@@ -147,7 +141,7 @@ class ContainerManager:
         """Check if user has persistent data from previous sessions"""
         volume_name = f"user-data-{username}"
         try:
-            result = self._run_remote_command(['docker', 'volume', 'inspect', volume_name])
+            result = self._run_command(['docker', 'volume', 'inspect', volume_name])
             
             if result.returncode == 0:
                 volume_info = json.loads(result.stdout)[0]
@@ -187,14 +181,15 @@ class ContainerManager:
                 inactive_users.append(username)
         
         for username in inactive_users:
-            print(f"🧹 Cleaning up inactive container for user: {username}")
+            print(f"Cleaning up inactive container for user: {username}")
             self.remove_user_container(username)
     
     def _cleanup_loop(self):
         """Background thread to cleanup inactive containers"""
         while True:
-            time.sleep(30)  # Check every 30 seconds
+            time.sleep(30)      # Run cleanup every 30 seconds
             try:
                 self._cleanup_inactive_containers()
             except Exception as e:
-                print(f"❌ Error in cleanup loop: {e}") 
+                print(f"Error in cleanup loop: {e}") 
+
